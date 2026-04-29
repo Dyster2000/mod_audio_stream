@@ -123,7 +123,7 @@ Defaults to `false`, which enforces hostname match with the peer certificate.
 The freeswitch module exposes the following API commands:
 
 ```
-uuid_audio_stream <uuid> start <wss-url> <mix-type> <sampling-rate> <metadata> <audio-format> <audio-head> <audio-tail>
+uuid_audio_stream <uuid> start <wss-url> <mix-type> <sampling-rate> <audio-format> <audio-head> <audio-tail> <start-paused> <metadata>
 ```
 Attaches a media bug and starts streaming audio (in L16 format) to the websocket server. FS default is 8k. If sampling-rate is other than 8k it will be resampled.
 - `uuid` - Freeswitch channel unique id
@@ -135,12 +135,15 @@ Attaches a media bug and starts streaming audio (in L16 format) to the websocket
 - `sampling-rate` - choice of
   - "8k" = 8000 Hz sample rate will be generated
   - "16k" = 16000 Hz sample rate will be generated
-- `metadata` - (optional) a valid `utf-8` text to send. It will be sent the first before audio streaming starts.
 - `audio-format` - (optional) specify if audio sent out is binary or base64 encoded.
   - "base64" = audio will be base64 encoded before sending it.
-  - "binary" = anything other that 'base64' will default to sending binary audio.
+  - "binary" = (default) anything other that 'base64' will default to sending binary audio.
 - `audio-head` - (optional) if sending base64, audio-head and audio-tail will wrap the audio. Useful for sending base64 audio in a json format.
 - `audio-tail` - (optional) if sending base64, audio-head and audio-tail will wrap the audio. Useful for sending base64 audio in a json format.
+- `start-paused` - (optional) Determines if audio stream will start active or paused. Useful if handshake is needed before starting audio.
+  - "paused" = audio will be initially paused.
+  - "active" = (default) anything other that 'paused' will default to audio sending being active.
+- `metadata` - (optional) a valid `utf-8` text to send. It will be sent the first before audio streaming starts.
 
 ```
 uuid_audio_stream <uuid> send_text <metadata>

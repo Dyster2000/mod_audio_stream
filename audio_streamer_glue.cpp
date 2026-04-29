@@ -205,11 +205,19 @@ private:
             if (!self) return;
             if (self->isCleanedUp()) return;
 
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "[setCloseCallback] reason='%s'\n", reason.c_str());
+            auto reasonMsg = reason;
+            if (reason.length() >= 2 && reason[0] == '\"' && reason[reason.length() - 1] == '\"')
+            {
+                reasonMsg = reason.substr(1, reason.length() - 2);
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "[setCloseCallback] reasonMsg='%s'\n", reasonMsg.c_str());
+            }
+
             cJSON* root = cJSON_CreateObject();
             cJSON_AddStringToObject(root, "status", "disconnected");
             cJSON* message = cJSON_CreateObject();
             cJSON_AddNumberToObject(message, "code", code);
-            cJSON_AddStringToObject(message, "reason", reason.c_str());
+            cJSON_AddStringToObject(message, "reason", reasonMsg.c_str());
             cJSON_AddItemToObject(root, "message", message);
 
             char* json_str = cJSON_PrintUnformatted(root);
@@ -450,7 +458,7 @@ namespace {
 
     switch_status_t stream_data_init(private_t *tech_pvt, switch_core_session_t *session, char *wsUri,
                                      uint32_t sampling, int desiredSampling, int channels, char *metadata,
-                                     int sendAsBinary, char *jsonHead, char *jsonTail, responseHandler_t responseHandler,
+                                     int sendAsBinary, char *jsonHead, char *jsonTail, int startPaused, responseHandler_t responseHandler,
                                      int deflate, int heart_beat, bool suppressLog, int rtp_packets, const char* extra_headers,
                                      const char *tls_cafile, const char *tls_keyfile, const char *tls_certfile, 
                                      bool tls_disable_hostname_validation)
@@ -467,7 +475,7 @@ namespace {
         tech_pvt->responseHandler = responseHandler;
         tech_pvt->rtp_packets = rtp_packets;
         tech_pvt->channels = channels;
-        tech_pvt->audio_paused = 0;
+        tech_pvt->audio_paused = startPaused;
         tech_pvt->send_binary_audio = sendAsBinary;
 
         if (metadata) strncpy(tech_pvt->initialMetadata, metadata, MAX_METADATA_LEN);
@@ -663,6 +671,7 @@ extern "C" {
                                         int sendAsBinary,
                                         char *jsonHead,
                                         char *jsonTail,
+                                        int startPaused,
                                         void **ppUserData)
     {
         int deflate, heart_beat;
@@ -722,7 +731,7 @@ extern "C" {
             return SWITCH_STATUS_FALSE;
         }
         if (SWITCH_STATUS_SUCCESS != stream_data_init(tech_pvt, session, wsUri, samples_per_second, sampling, channels, 
-                                                        metadata, sendAsBinary, jsonHead, jsonTail, responseHandler, deflate, heart_beat, suppressLog, rtp_packets,
+                                                        metadata, sendAsBinary, jsonHead, jsonTail, startPaused, responseHandler, deflate, heart_beat, suppressLog, rtp_packets,
                                                         extra_headers, tls_cafile, tls_keyfile, tls_certfile, tls_disable_hostname_validation)) {
             destroy_tech_pvt(tech_pvt);
             return SWITCH_STATUS_FALSE;
