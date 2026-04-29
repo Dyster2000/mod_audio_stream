@@ -60,7 +60,8 @@ static switch_status_t start_capture(switch_core_session_t *session,
                                      char* metadata,
                                      int sendAsBinary,
                                      char* jsonHead,
-                                     char* jsonTail)
+                                     char* jsonTail,
+                                     int startPaused)
 {
     switch_channel_t *channel = switch_core_session_get_channel(session);
     switch_media_bug_t *bug;
@@ -84,7 +85,7 @@ static switch_status_t start_capture(switch_core_session_t *session,
 
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "calling stream_session_init.\n");
     if (SWITCH_STATUS_FALSE == stream_session_init(session, responseHandler, read_codec->implementation->actual_samples_per_second,
-                                                 wsUri, sampling, channels, metadata, sendAsBinary, jsonHead, jsonTail, &pUserData)) {
+                                                 wsUri, sampling, channels, metadata, sendAsBinary, jsonHead, jsonTail, startPaused, &pUserData)) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error initializing mod_audio_stream session.\n");
         return SWITCH_STATUS_FALSE;
     }
@@ -130,11 +131,11 @@ static switch_status_t send_text(switch_core_session_t *session, char* text) {
     switch_media_bug_t *bug = switch_channel_get_private(channel, MY_BUG_NAME);
 
     if (bug) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "mod_audio_stream: sending text: %s.\n", text);
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "mod_audio_stream: sending text: %s\n", text);
         status = stream_session_send_text(session, text);
     }
     else {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "mod_audio_stream: no bug, failed sending text: %s.\n", text);
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "mod_audio_stream: no bug, failed sending text: %s\n", text);
     }
     return status;
 }
@@ -142,120 +143,158 @@ static switch_status_t send_text(switch_core_session_t *session, char* text) {
 #define STREAM_API_SYNTAX "<uuid> [start | stop | send_text | pause | resume | graceful-shutdown ] [wss-url | path] [mono | mixed | stereo] [8000 | 16000] [metadata]"
 SWITCH_STANDARD_API(stream_function)
 {
-    char *mycmd = NULL, *argv[9] = { 0 };
+    char *mycmd = NULL, *argv[10] = { 0 };
     int argc = 0;
 
     switch_status_t status = SWITCH_STATUS_FALSE;
 
-    if (!zstr(cmd) && (mycmd = strdup(cmd))) {
-        argc = switch_separate_string(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
-    }
     assert(cmd);
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: %s\n", cmd ? cmd : "");
 
-    if (zstr(cmd) || argc < 2 || (0 == strcmp(argv[1], "start") && argc < 4)) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error with command %s %s %s.\n", cmd, argv[0], argv[1]);
-        stream->write_function(stream, "-USAGE: %s\n", STREAM_API_SYNTAX);
-        goto done;
-    } else {
-        switch_core_session_t *lsession = NULL;
-        if ((lsession = switch_core_session_locate(argv[0]))) {
-            if (!strcasecmp(argv[1], "stop")) {
-                if(argc > 2 && (is_valid_utf8(argv[2]) != SWITCH_STATUS_SUCCESS)) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                                      "%s contains invalid utf8 characters\n", argv[2]);
-                    switch_core_session_rwunlock(lsession);
-                    goto done;
-                }
-                status = do_stop(lsession, argc > 2 ? argv[2] : NULL);
-            } else if (!strcasecmp(argv[1], "pause")) {
-                status = do_pauseresume(lsession, 1);
-            } else if (!strcasecmp(argv[1], "resume")) {
-                status = do_pauseresume(lsession, 0);
-            } else if (!strcasecmp(argv[1], "send_text")) {
-                if (argc < 3) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                                      "send_text requires an argument specifying text to send\n");
-                    switch_core_session_rwunlock(lsession);
-                    goto done;
-                }
-                if(is_valid_utf8(argv[2]) != SWITCH_STATUS_SUCCESS) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                                      "%s contains invalid utf8 characters\n", argv[2]);
-                    switch_core_session_rwunlock(lsession);
-                    goto done;
-                }
-                status = send_text(lsession, argv[2]);
-            } else if (!strcasecmp(argv[1], "start")) {
-                //switch_channel_t *channel = switch_core_session_get_channel(lsession);
-                char wsUri[MAX_WS_URI];
-                int sampling = 8000;
-                switch_media_bug_flag_t flags = SMBF_READ_STREAM;
-                int sendAsBinary = 1;
-                char *metadata = argc > 5 ? argv[5] : NULL;
-                if(metadata && (is_valid_utf8(metadata) != SWITCH_STATUS_SUCCESS)) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                                      "%s contains invalid utf8 characters\n", argv[2]);
-                    switch_core_session_rwunlock(lsession);
-                    goto done;
-                }
-                if (0 == strcmp(argv[3], "mixed")) {
-                    flags |= SMBF_WRITE_STREAM;
-                } else if (0 == strcmp(argv[3], "stereo")) {
-                    flags |= SMBF_WRITE_STREAM;
-                    flags |= SMBF_STEREO;
-                } else if (0 != strcmp(argv[3], "mono")) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                                      "invalid mix type: %s, must be mono, mixed, or stereo\n", argv[3]);
-                    switch_core_session_rwunlock(lsession);
-                    goto done;
-                }
-                if (argc > 4) {
-                    if (0 == strcmp(argv[4], "16k")) {
-                        sampling = 16000;
-                    } else if (0 == strcmp(argv[4], "8k")) {
-                        sampling = 8000;
-                    } else {
-                        sampling = atoi(argv[4]);
-                    }
-                }
-                if (argc > 6) {
-                  if (0 == strcmp(argv[6], "base64")) {
-                    sendAsBinary = 0;
-                  }
-                }
-                char *jsonHead = (!sendAsBinary && argc > 8) ? argv[7] : NULL;
-                char *jsonTail = (!sendAsBinary && argc > 8) ? argv[8] : NULL;
-                if (jsonHead && (is_valid_utf8(jsonHead) != SWITCH_STATUS_SUCCESS)) {
-                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                    "%s contains invalid utf8 characters\n", argv[2]);
-                  switch_core_session_rwunlock(lsession);
-                  goto done;
-                }
-                if (jsonTail && (is_valid_utf8(jsonTail) != SWITCH_STATUS_SUCCESS)) {
-                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                    "%s contains invalid utf8 characters\n", argv[2]);
-                  switch_core_session_rwunlock(lsession);
-                  goto done;
-                }
-                if (!validate_ws_uri(argv[2], &wsUri[0])) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                                      "invalid websocket uri: %s\n", argv[2]);
-                } else if (sampling % 8000 != 0) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                                      "invalid sample rate: %s\n", argv[4]);
-                } else {
-                    status = start_capture(lsession, flags, wsUri, sampling, metadata, sendAsBinary, jsonHead, jsonTail);
-                }
-            } else {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                                  "unsupported mod_audio_stream cmd: %s\n", argv[1]);
-            }
-            switch_core_session_rwunlock(lsession);
-        } else {
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error locating session %s\n",
-                              argv[0]);
+    // Get max parms, so metadata at end can have spaces
+    if (!zstr(cmd) && (mycmd = strdup(cmd))) {
+        argc = switch_separate_string(mycmd, ' ', argv, 4);
+
+        if (zstr(cmd) || argc < 2 || (0 == strcmp(argv[1], "start") && argc < 4)) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error with command %s %s %s.\n", cmd, argv[0], argv[1]);
+            stream->write_function(stream, "-USAGE: %s\n", STREAM_API_SYNTAX);
+            goto done;
         }
+        if (strcmp(argv[1], "start") == 0) {
+            mycmd = strdup(cmd);
+            argc = switch_separate_string(mycmd, ' ', argv, 10);
+        } else if (strcmp(argv[1], "send_text") == 0 || strcmp(argv[1], "stop") == 0) {
+            mycmd = strdup(cmd);
+            argc = switch_separate_string(mycmd, ' ', argv, 3);
+        }
+    }
+
+    switch_core_session_t *lsession = NULL;
+    if ((lsession = switch_core_session_locate(argv[0]))) {
+        if (!strcasecmp(argv[1], "stop")) {
+            if(argc > 2 && (is_valid_utf8(argv[2]) != SWITCH_STATUS_SUCCESS)) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                                  "%s contains invalid utf8 characters\n", argv[2]);
+                switch_core_session_rwunlock(lsession);
+                goto done;
+            }
+            status = do_stop(lsession, argc > 2 ? argv[2] : NULL);
+        } else if (!strcasecmp(argv[1], "pause")) {
+            status = do_pauseresume(lsession, 1);
+        } else if (!strcasecmp(argv[1], "resume")) {
+            status = do_pauseresume(lsession, 0);
+        } else if (!strcasecmp(argv[1], "send_text")) {
+            if (argc < 3) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                                  "send_text requires an argument specifying text to send\n");
+                switch_core_session_rwunlock(lsession);
+                goto done;
+            }
+            if(is_valid_utf8(argv[2]) != SWITCH_STATUS_SUCCESS) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                                  "%s contains invalid utf8 characters\n", argv[2]);
+                switch_core_session_rwunlock(lsession);
+                goto done;
+            }
+            status = send_text(lsession, argv[2]);
+        } else if (!strcasecmp(argv[1], "start")) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 1\n");
+            //switch_channel_t *channel = switch_core_session_get_channel(lsession);
+            char wsUri[MAX_WS_URI];
+            int sampling = 8000;
+            switch_media_bug_flag_t flags = SMBF_READ_STREAM;
+            int sendAsBinary = 1;
+            int startPaused = 0;
+            char *jsonHead = (argc > 7) ? argv[6] : NULL;
+            char *jsonTail = (argc > 7) ? argv[7] : NULL;
+            char *metadata = (argc > 9) ? argv[9] : NULL;
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 2\n");
+            if(metadata && (is_valid_utf8(metadata) != SWITCH_STATUS_SUCCESS)) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                                  "%s contains invalid utf8 characters\n", metadata);
+                switch_core_session_rwunlock(lsession);
+                goto done;
+            }
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 3\n");
+            if (0 == strcmp(argv[3], "mixed")) {
+                flags |= SMBF_WRITE_STREAM;
+            } else if (0 == strcmp(argv[3], "stereo")) {
+                flags |= SMBF_WRITE_STREAM;
+                flags |= SMBF_STEREO;
+            } else if (0 != strcmp(argv[3], "mono")) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                                  "invalid mix type: %s, must be mono, mixed, or stereo\n", argv[3]);
+                switch_core_session_rwunlock(lsession);
+                goto done;
+            }
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 4\n");
+            if (argc > 4) {
+                if (0 == strcmp(argv[4], "16k")) {
+                    sampling = 16000;
+                } else if (0 == strcmp(argv[4], "8k")) {
+                    sampling = 8000;
+                } else {
+                    sampling = atoi(argv[4]);
+                }
+            }
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 5\n");
+            if (argc > 5) {
+              if (0 == strcmp(argv[5], "base64")) {
+                sendAsBinary = 0;
+              }
+            }
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 6\n");
+            if (sendAsBinary) {
+              jsonHead = NULL;
+              jsonTail = NULL;
+            }
+            else {
+              if (jsonHead && strcmp(jsonHead, "\"\"") == 0) {
+                jsonHead = NULL;
+              }
+              if (jsonTail && strcmp(jsonTail, "\"\"") == 0) {
+                jsonTail = NULL;
+              }
+            }
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 7\n");
+            if (jsonHead && (is_valid_utf8(jsonHead) != SWITCH_STATUS_SUCCESS)) {
+              switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                "%s contains invalid utf8 characters\n", argv[2]);
+              switch_core_session_rwunlock(lsession);
+              goto done;
+            }
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 8\n");
+            if (jsonTail && (is_valid_utf8(jsonTail) != SWITCH_STATUS_SUCCESS)) {
+              switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                "%s contains invalid utf8 characters\n", argv[2]);
+              switch_core_session_rwunlock(lsession);
+              goto done;
+            }
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 9\n");
+            if (argc > 8) {
+              if (0 == strcmp(argv[8], "paused")) {
+                startPaused = 1;
+              }
+            }
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 10\n");
+            if (!validate_ws_uri(argv[2], &wsUri[0])) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                                  "invalid websocket uri: %s\n", argv[2]);
+            } else if (sampling % 8000 != 0) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                                  "invalid sample rate: %s\n", argv[4]);
+            } else {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 11\n");
+                status = start_capture(lsession, flags, wsUri, sampling, metadata, sendAsBinary, jsonHead, jsonTail, startPaused);
+            }
+        } else {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                              "unsupported mod_audio_stream cmd: %s\n", argv[1]);
+        }
+        switch_core_session_rwunlock(lsession);
+    } else {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error locating session %s\n",
+                          argv[0]);
     }
 
     if (status == SWITCH_STATUS_SUCCESS) {
