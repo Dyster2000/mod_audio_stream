@@ -11,6 +11,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_audio_stream_load);
 SWITCH_MODULE_DEFINITION(mod_audio_stream, mod_audio_stream_load, mod_audio_stream_shutdown, NULL /*mod_audio_stream_runtime*/);
 
 static void responseHandler(switch_core_session_t* session, const char* eventName, const char* json) {
+    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "[mod_audio_stream::responseHandler] Send event %s : json='%s'\n", eventName, json ? json : "");
+
     switch_event_t *event;
     switch_channel_t *channel = switch_core_session_get_channel(session);
     switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, eventName);
@@ -31,9 +33,9 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
 
         case SWITCH_ABC_TYPE_CLOSE:
             {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Got SWITCH_ABC_TYPE_CLOSE.\n");
                 // Check if this is a normal channel closure or a requested closure
                 channel_closing = tech_pvt->close_requested ? 0 : 1;
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Got SWITCH_ABC_TYPE_CLOSE. channel_closing=%d\n", channel_closing);
                 stream_session_cleanup(session, NULL, channel_closing);
             }
             break;
@@ -61,6 +63,7 @@ static switch_status_t start_capture(switch_core_session_t *session,
                                      int sendAsBinary,
                                      char* jsonHead,
                                      char* jsonTail,
+                                     char* jsonOnClose,
                                      int startPaused)
 {
     switch_channel_t *channel = switch_core_session_get_channel(session);
@@ -85,7 +88,7 @@ static switch_status_t start_capture(switch_core_session_t *session,
 
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "calling stream_session_init.\n");
     if (SWITCH_STATUS_FALSE == stream_session_init(session, responseHandler, read_codec->implementation->actual_samples_per_second,
-                                                 wsUri, sampling, channels, metadata, sendAsBinary, jsonHead, jsonTail, startPaused, &pUserData)) {
+                                                 wsUri, sampling, channels, metadata, sendAsBinary, jsonHead, jsonTail, jsonOnClose, startPaused, &pUserData)) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error initializing mod_audio_stream session.\n");
         return SWITCH_STATUS_FALSE;
     }
@@ -143,7 +146,7 @@ static switch_status_t send_text(switch_core_session_t *session, char* text) {
 #define STREAM_API_SYNTAX "<uuid> [start | stop | send_text | pause | resume | graceful-shutdown ] [wss-url | path] [mono | mixed | stereo] [8000 | 16000] [metadata]"
 SWITCH_STANDARD_API(stream_function)
 {
-    char *mycmd = NULL, *argv[10] = { 0 };
+    char *mycmd = NULL, *argv[11] = { 0 };
     int argc = 0;
 
     switch_status_t status = SWITCH_STATUS_FALSE;
@@ -162,7 +165,7 @@ SWITCH_STANDARD_API(stream_function)
         }
         if (strcmp(argv[1], "start") == 0) {
             mycmd = strdup(cmd);
-            argc = switch_separate_string(mycmd, ' ', argv, 10);
+            argc = switch_separate_string(mycmd, ' ', argv, 11);
         } else if (strcmp(argv[1], "send_text") == 0 || strcmp(argv[1], "stop") == 0) {
             mycmd = strdup(cmd);
             argc = switch_separate_string(mycmd, ' ', argv, 3);
@@ -198,7 +201,6 @@ SWITCH_STANDARD_API(stream_function)
             }
             status = send_text(lsession, argv[2]);
         } else if (!strcasecmp(argv[1], "start")) {
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 1\n");
             //switch_channel_t *channel = switch_core_session_get_channel(lsession);
             char wsUri[MAX_WS_URI];
             int sampling = 8000;
@@ -207,15 +209,8 @@ SWITCH_STANDARD_API(stream_function)
             int startPaused = 0;
             char *jsonHead = (argc > 7) ? argv[6] : NULL;
             char *jsonTail = (argc > 7) ? argv[7] : NULL;
-            char *metadata = (argc > 9) ? argv[9] : NULL;
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 2\n");
-            if(metadata && (is_valid_utf8(metadata) != SWITCH_STATUS_SUCCESS)) {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                                  "%s contains invalid utf8 characters\n", metadata);
-                switch_core_session_rwunlock(lsession);
-                goto done;
-            }
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 3\n");
+            char *jsonOnClose = (argc > 9) ? argv[9] : NULL;
+            char *metadata = (argc > 10) ? argv[10] : NULL;
             if (0 == strcmp(argv[3], "mixed")) {
                 flags |= SMBF_WRITE_STREAM;
             } else if (0 == strcmp(argv[3], "stereo")) {
@@ -227,7 +222,6 @@ SWITCH_STANDARD_API(stream_function)
                 switch_core_session_rwunlock(lsession);
                 goto done;
             }
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 4\n");
             if (argc > 4) {
                 if (0 == strcmp(argv[4], "16k")) {
                     sampling = 16000;
@@ -237,13 +231,11 @@ SWITCH_STANDARD_API(stream_function)
                     sampling = atoi(argv[4]);
                 }
             }
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 5\n");
             if (argc > 5) {
               if (0 == strcmp(argv[5], "base64")) {
                 sendAsBinary = 0;
               }
             }
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 6\n");
             if (sendAsBinary) {
               jsonHead = NULL;
               jsonTail = NULL;
@@ -256,27 +248,38 @@ SWITCH_STANDARD_API(stream_function)
                 jsonTail = NULL;
               }
             }
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 7\n");
             if (jsonHead && (is_valid_utf8(jsonHead) != SWITCH_STATUS_SUCCESS)) {
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
                 "%s contains invalid utf8 characters\n", argv[2]);
               switch_core_session_rwunlock(lsession);
               goto done;
             }
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 8\n");
             if (jsonTail && (is_valid_utf8(jsonTail) != SWITCH_STATUS_SUCCESS)) {
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
                 "%s contains invalid utf8 characters\n", argv[2]);
               switch_core_session_rwunlock(lsession);
               goto done;
             }
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 9\n");
             if (argc > 8) {
               if (0 == strcmp(argv[8], "paused")) {
                 startPaused = 1;
               }
             }
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 10\n");
+            if (jsonOnClose && strcmp(jsonOnClose, "\"\"") == 0) {
+              jsonOnClose = NULL;
+            }
+            if (jsonOnClose && (is_valid_utf8(jsonOnClose) != SWITCH_STATUS_SUCCESS)) {
+              switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                "%s contains invalid utf8 characters\n", jsonOnClose);
+              switch_core_session_rwunlock(lsession);
+              goto done;
+            }
+            if (metadata && (is_valid_utf8(metadata) != SWITCH_STATUS_SUCCESS)) {
+              switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                "%s contains invalid utf8 characters\n", metadata);
+              switch_core_session_rwunlock(lsession);
+              goto done;
+            }
             if (!validate_ws_uri(argv[2], &wsUri[0])) {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
                                   "invalid websocket uri: %s\n", argv[2]);
@@ -284,8 +287,7 @@ SWITCH_STANDARD_API(stream_function)
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
                                   "invalid sample rate: %s\n", argv[4]);
             } else {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "mod_audio_stream cmd: start debug 11\n");
-                status = start_capture(lsession, flags, wsUri, sampling, metadata, sendAsBinary, jsonHead, jsonTail, startPaused);
+                status = start_capture(lsession, flags, wsUri, sampling, metadata, sendAsBinary, jsonHead, jsonTail, jsonOnClose, startPaused);
             }
         } else {
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,

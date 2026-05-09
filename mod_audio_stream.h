@@ -10,6 +10,7 @@
 #define MAX_METADATA_LEN (8192)
 #define MAX_JSON_HEAD_LEN (256)
 #define MAX_JSON_TAIL_LEN (256)
+#define MAX_JSON_ON_CLOSE_LEN (256)
 
 #define EVENT_CONNECT           "mod_audio_stream::connect"
 #define EVENT_DISCONNECT        "mod_audio_stream::disconnect"
@@ -35,6 +36,7 @@ struct private_data {
     char initialMetadata[8192];
     char audioJsonHead[256];
     char audioJsonTail[256];
+    char jsonOnClose[256];
     switch_buffer_t *sbuffer;
     int rtp_packets;
 };

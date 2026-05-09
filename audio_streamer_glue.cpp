@@ -458,7 +458,7 @@ namespace {
 
     switch_status_t stream_data_init(private_t *tech_pvt, switch_core_session_t *session, char *wsUri,
                                      uint32_t sampling, int desiredSampling, int channels, char *metadata,
-                                     int sendAsBinary, char *jsonHead, char *jsonTail, int startPaused, responseHandler_t responseHandler,
+                                     int sendAsBinary, char *jsonHead, char *jsonTail, char *jsonOnClose, int startPaused, responseHandler_t responseHandler,
                                      int deflate, int heart_beat, bool suppressLog, int rtp_packets, const char* extra_headers,
                                      const char *tls_cafile, const char *tls_keyfile, const char *tls_certfile, 
                                      bool tls_disable_hostname_validation)
@@ -481,6 +481,7 @@ namespace {
         if (metadata) strncpy(tech_pvt->initialMetadata, metadata, MAX_METADATA_LEN);
         if (jsonHead) strncpy(tech_pvt->audioJsonHead, jsonHead, MAX_JSON_HEAD_LEN);
         if (jsonTail) strncpy(tech_pvt->audioJsonTail, jsonTail, MAX_JSON_TAIL_LEN);
+        if (jsonOnClose) strncpy(tech_pvt->jsonOnClose, jsonOnClose, MAX_JSON_ON_CLOSE_LEN);
 
         //size_t buflen = (FRAME_SIZE_8000 * desiredSampling / 8000 * channels * 1000 / RTP_PERIOD * BUFFERED_SEC);
         const size_t buflen = (FRAME_SIZE_8000 * desiredSampling / 8000 * channels * rtp_packets);
@@ -671,6 +672,7 @@ extern "C" {
                                         int sendAsBinary,
                                         char *jsonHead,
                                         char *jsonTail,
+                                        char *jsonOnClose,
                                         int startPaused,
                                         void **ppUserData)
     {
@@ -731,7 +733,7 @@ extern "C" {
             return SWITCH_STATUS_FALSE;
         }
         if (SWITCH_STATUS_SUCCESS != stream_data_init(tech_pvt, session, wsUri, samples_per_second, sampling, channels, 
-                                                        metadata, sendAsBinary, jsonHead, jsonTail, startPaused, responseHandler, deflate, heart_beat, suppressLog, rtp_packets,
+                                                        metadata, sendAsBinary, jsonHead, jsonTail, jsonOnClose, startPaused, responseHandler, deflate, heart_beat, suppressLog, rtp_packets,
                                                         extra_headers, tls_cafile, tls_keyfile, tls_certfile, tls_disable_hostname_validation)) {
             destroy_tech_pvt(tech_pvt);
             return SWITCH_STATUS_FALSE;
@@ -923,7 +925,7 @@ extern "C" {
             }
             tech_pvt->cleanup_started = 1;
 
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%s) stream_session_cleanup\n", sessionId);
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%s) stream_session_cleanup: channelIsClosing=%d\n", sessionId, channelIsClosing);
 
             switch_channel_set_private(channel, MY_BUG_NAME, nullptr);
 
@@ -947,8 +949,13 @@ extern "C" {
 
             if(streamer) {
                 streamer->deleteFiles();
-                if (text) streamer->writeText(text);
-                
+                if (text) {
+                  streamer->writeText(text);
+                }
+                else if (tech_pvt->jsonOnClose[0] != 0) {
+                  streamer->writeText(tech_pvt->jsonOnClose);
+                }
+
                 streamer->markCleanedUp();
                 streamer->disconnect();
             }
