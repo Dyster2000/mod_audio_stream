@@ -138,11 +138,12 @@ Attaches a media bug and starts streaming audio (in L16 format) to the websocket
 - `audio-format` - (optional) specify if audio sent out is binary or base64 encoded.
   - "base64" = audio will be base64 encoded before sending it.
   - "binary" = (default) anything other that 'base64' will default to sending binary audio.
-- `audio-head` - (optional) if sending base64, audio-head and audio-tail will wrap the audio. Useful for sending base64 audio in a json format.
-- `audio-tail` - (optional) if sending base64, audio-head and audio-tail will wrap the audio. Useful for sending base64 audio in a json format.
+- `audio-head` - (optional) if sending base64, audio-head and audio-tail will wrap the audio. Useful for sending base64 audio in a json format. Set to "" if none wanted.
+- `audio-tail` - (optional) if sending base64, audio-head and audio-tail will wrap the audio. Useful for sending base64 audio in a json format. Set to "" if none wanted.
 - `start-paused` - (optional) Determines if audio stream will start active or paused. Useful if handshake is needed before starting audio.
   - "paused" = audio will be initially paused.
   - "active" = (default) anything other that 'paused' will default to audio sending being active.
+- `close-text` - (optional) a valid `utf-8` text to send before closing socket if notified by freeswitch that call has ended while streaming is active. Set to "" if none wanted.
 - `metadata` - (optional) a valid `utf-8` text to send. It will be sent the first before audio streaming starts.
 
 ```
